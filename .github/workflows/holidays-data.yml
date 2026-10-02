@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Python 3.11 설치(앱 리포에서 자료를 만든 것과 같은 버전) + pip 캐시
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
