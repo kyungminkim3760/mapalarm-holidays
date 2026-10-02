@@ -1,0 +1,183 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# holidays-data.yml — 공휴일 자료를 자동으로 만들어 GitHub Pages 에 올리는 작업(GitHub Actions)
+#
+# [어디에 두나]
+#  이 파일은 앱 리포가 아니라 **공휴일 자료 전용 공개 리포**의 .github/workflows/ 폴더에 복사한다.
+#  자료 리포의 파일 배치(tools/holidays/publish/README.md 참조):
+#    generate_holidays.py               ← 앱 리포 tools/holidays/ 에서 복사
+#    requirements.txt                   ← 앱 리포 tools/holidays/ 에서 복사(holidays==버전 고정)
+#    .github/workflows/holidays-data.yml← 이 파일
+#    .github/dependabot.yml             ← tools/holidays/publish/dependabot.yml
+#
+# [결과 주소]
+#  <PAGES_BASE>/holidays/manifest.json   (목차 — 앱이 먼저 받는다)
+#  <PAGES_BASE>/holidays/<국가코드>.json  (나라 파일 — 앱이 고른 나라 하나만 받는다)
+#  <PAGES_BASE>/holidays/LICENSE-python-holidays.txt (python-holidays MIT 라이선스 문구)
+#  <PAGES_BASE> = https://<계정>.github.io/<리포이름>
+#
+# [언제 도나 — 아래 on: 참조]
+#  · 매달 1일 03:17 UTC(한국 12:17) — 12월 1일 실행이 "다음 해 공휴일 반영" 정기 실행이고,
+#    나머지 달은 ① 1월 1일에 자료 시작 연도가 새해로 넘어가게 ② 중간에 고시된 공휴일
+#    (임시공휴일 등)이 라이브러리 버전 올림으로 들어왔을 때 늦어도 한 달 안에 반영되게 한다.
+#    분(17)을 정각이 아닌 값으로 둔 이유: GitHub 는 정각에 예약 작업이 몰려 지연·누락이 잦다.
+#  · requirements.txt / generate_holidays.py 가 main 에 바뀌어 올라올 때(Dependabot 버전 올림 PR 병합 등)
+#    → 새 공휴일이 곧바로 배포된다.
+#  · 수동 실행(Actions 탭 → Run workflow) — 처음 한 번, 또는 급히 다시 올릴 때.
+#
+# [내용이 그대로면 배포하지 않는다]
+#  나라 파일과 manifest 에는 생성 날짜(generated·version)가 들어 있어 매달 숫자만 바뀐다.
+#  그대로 배포하면 전 세계 앱이 똑같은 자료를 매달 다시 받는다(데이터 낭비).
+#  그래서 날짜 필드를 뺀 "내용 지문(SHA-256)"을 content-hash.txt 로 같이 올리고, 다음 실행 때
+#  이미 올라가 있는 지문과 같으면 배포 단계를 건너뛴다(수동 실행에서 force 를 켜면 무조건 배포).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: holidays-data
+
+on:
+  schedule:
+    - cron: "17 3 1 * *"          # 매달 1일 03:17 UTC — 12월 1일 실행 포함(위 헤더 설명)
+  push:
+    branches: [main]
+    paths:
+      - "requirements.txt"         # 라이브러리 버전 올림 = 새 공휴일이 들어오는 길
+      - "generate_holidays.py"
+      - ".github/workflows/holidays-data.yml"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "내용이 같아도 강제로 다시 배포"
+        type: boolean
+        default: false
+
+# GitHub Pages 배포에 필요한 최소 권한.
+#  contents: read  — 리포 파일 읽기(checkout)
+#  pages: write    — Pages 에 올리기(deploy-pages)
+#  id-token: write — deploy-pages 가 배포 신원 확인(OIDC)에 쓴다
+#  actions: write  — 아래 keepalive 단계(예약 작업 자동 중지 방지)
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write
+
+# 같은 시간에 두 번 돌면(예약 + 수동) 배포가 엉키지 않게 하나씩만.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      # 리포 파일 받기
+      - uses: actions/checkout@v4
+
+      # Python 3.11 설치(앱 리포에서 자료를 만든 것과 같은 버전) + pip 캐시
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # python-holidays 설치 — requirements.txt 에 버전이 고정돼 있어 매번 같은 결과가 나온다.
+      - name: Install requirements
+        run: python -m pip install -r requirements.txt
+
+      # 자료 생성 → site/holidays/ (나라 파일 + manifest.json + LICENSE-python-holidays.txt)
+      #  시작 연도는 기본값(실행한 날의 해)을 쓴다. 끝 연도 = 시작 + 10.
+      - name: Generate holiday data
+        env:
+          PYTHONIOENCODING: utf-8      # 현지어 나라 이름 출력이 깨지지 않게
+        run: python generate_holidays.py --out site/holidays
+
+      # 라이선스 문구 확인 + 리포 자체 LICENSE 가 있으면 같이 올린다(MIT 고지 의무).
+      #  python-holidays LICENSE 는 생성기가 site/holidays/ 에 복사한다 — 없으면 여기서 실패시킨다.
+      - name: Copy LICENSE
+        run: |
+          test -f site/holidays/LICENSE-python-holidays.txt
+          if [ -f LICENSE ]; then cp LICENSE site/LICENSE.txt; fi
+
+      # 망가진 자료가 전 세계 앱에 퍼지지 않게 최소 점검 — 하나라도 틀리면 배포하지 않는다.
+      #  · manifest 형식 번호 1, 나라 150개 이상, 목록의 파일이 실제로 있음, 한국 자료에 10월 3일
+      - name: Validate output
+        run: |
+          python - <<'PY'
+          import json, os, sys, datetime
+          base = "site/holidays"
+          m = json.load(open(os.path.join(base, "manifest.json"), encoding="utf-8"))
+          assert m["schema"] == 1, "schema"
+          assert len(m["countries"]) >= 150, f"countries={len(m['countries'])}"
+          for code, e in m["countries"].items():
+              assert os.path.isfile(os.path.join(base, e["file"])), e["file"]
+          kr = json.load(open(os.path.join(base, "KR.json"), encoding="utf-8"))
+          year = datetime.date.today().year
+          assert any(h["date"] == f"{year}-10-03" for h in kr["holidays"]), "KR 10-03"
+          print("ok:", len(m["countries"]), "countries, version", m["version"])
+          PY
+
+      # 날짜 필드를 뺀 내용 지문을 만든다(헤더 "내용이 그대로면 배포하지 않는다").
+      - name: Content hash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          base = "site/holidays"
+          h = hashlib.sha256()
+          for name in sorted(os.listdir(base)):
+              if not name.endswith(".json"):
+                  continue
+              data = json.load(open(os.path.join(base, name), encoding="utf-8"))
+              for k in ("generated", "version"):
+                  data.pop(k, None)
+              h.update(name.encode())
+              h.update(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+          open(os.path.join(base, "content-hash.txt"), "w").write(h.hexdigest() + "\n")
+          print(h.hexdigest())
+          PY
+
+      # Pages 주소 알아내기(base_url) — Pages 가 "GitHub Actions" 로 켜져 있어야 한다.
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      # 이미 올라가 있는 지문과 비교. 처음 실행(파일 없음)·수동 force·내용 변경이면 changed=true.
+      - id: compare
+        name: Compare with deployed data
+        run: |
+          new="$(cat site/holidays/content-hash.txt)"
+          old="$(curl -fsSL "${{ steps.pages.outputs.base_url }}/holidays/content-hash.txt" || true)"
+          echo "deployed=${old:-none} new=${new}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$old" = "$new" ]; then
+            echo "내용이 같아 배포를 건너뜁니다."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # site/ 폴더를 Pages 배포용 묶음으로 올린다.
+      - if: steps.compare.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      # 공개 리포의 예약 작업은 리포에 60일 동안 활동이 없으면 GitHub 가 자동으로 꺼 버린다.
+      # 매 실행마다 이 작업을 "켜기" API 로 다시 켜 두어 사람 손 없이 계속 돌게 한다.
+      # (실패해도 자료 배포에는 영향이 없도록 continue-on-error.)
+      - name: Keep schedule alive
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PUT "repos/${{ github.repository }}/actions/workflows/holidays-data.yml/enable"
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # 위에서 올린 묶음을 실제 공개 주소에 배포
+      - id: deployment
+        uses: actions/deploy-pages@v4

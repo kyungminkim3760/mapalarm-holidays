@@ -1,0 +1,65 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# dependabot-automerge.yml — Dependabot 버전 올림 PR 을 "자료가 정상으로 만들어지면" 자동 병합한다
+#
+# [어디에 두나] 공휴일 자료 리포의 .github/workflows/dependabot-automerge.yml
+#
+# [왜 필요한가 — 사람 손 0 을 위해]
+#  dependabot.yml 만 있으면 PR 이 와도 누군가 "Merge" 를 눌러야 새 공휴일이 배포된다.
+#  이 작업은 PR 의 새 버전으로 자료를 실제로 만들어 보고(holidays-data.yml 과 같은 점검),
+#  통과할 때만 병합한 뒤 배포 작업(holidays-data.yml)을 바로 실행시킨다.
+#   · 점검 실패(새 버전에서 생성기가 깨짐 등) → 병합하지 않고 PR 을 열어 둔다.
+#     배포된 자료는 그대로이므로 앱은 안전하다. 오너에게 실패 메일이 가면 Claude 에게 전달.
+#   · GitHub 규칙상 이 작업이 한 병합은 push 트리거를 깨우지 않는다 → 그래서 병합 뒤
+#     `gh workflow run` 으로 배포 작업을 직접 실행한다(workflow_dispatch 는 예외적으로 허용됨).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+name: dependabot-automerge
+
+on: pull_request
+
+# PR 병합(contents·pull-requests)과 배포 작업 실행(actions)에 필요한 권한
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  verify-and-merge:
+    # Dependabot 이 만든 PR 에서만 동작(사람이 만든 PR 은 건드리지 않는다)
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # PR 의 새 버전으로 설치 → 생성 → 점검(holidays-data.yml 의 Validate 와 같은 기준)
+      - name: Generate and validate with new version
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -m pip install -r requirements.txt
+          python generate_holidays.py --out site/holidays
+          python - <<'PY'
+          import json, os, datetime
+          base = "site/holidays"
+          m = json.load(open(os.path.join(base, "manifest.json"), encoding="utf-8"))
+          assert m["schema"] == 1, "schema"
+          assert len(m["countries"]) >= 150, f"countries={len(m['countries'])}"
+          for code, e in m["countries"].items():
+              assert os.path.isfile(os.path.join(base, e["file"])), e["file"]
+          kr = json.load(open(os.path.join(base, "KR.json"), encoding="utf-8"))
+          year = datetime.date.today().year
+          assert any(h["date"] == f"{year}-10-03" for h in kr["holidays"]), "KR 10-03"
+          print("ok:", len(m["countries"]), "countries")
+          PY
+
+      # 점검 통과 → 병합(squash) → 배포 작업 실행
+      - name: Merge and trigger deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr merge "${{ github.event.pull_request.html_url }}" --squash --delete-branch
+          gh workflow run holidays-data.yml --ref main

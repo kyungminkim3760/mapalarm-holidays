@@ -1,0 +1,31 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# dependabot.yml — 라이브러리 새 버전이 나오면 GitHub 가 "버전 올림 PR"을 자동으로 만들어 준다
+#
+# [어디에 두나] 공휴일 자료 리포의 .github/dependabot.yml
+#
+# [왜 필요한가]
+#  requirements.txt 에 python-holidays 버전이 고정(holidays==0.105)돼 있어 자료는 늘 같은 결과로 나온다.
+#  새로 고시된 공휴일은 **라이브러리 새 버전**으로만 들어오므로, 버전을 올리는 일을 Dependabot 이 맡는다.
+#   PR 이 오면 → 오너는 "Merge" 버튼만 누른다 → main 에 requirements.txt 가 바뀌어
+#   holidays-data.yml 이 곧바로 돌아 새 자료를 배포한다(검증 단계를 통과해야 배포됨).
+#
+# [주기] 매주 월요일 — python-holidays 는 대략 2~4주마다 새 버전을 낸다.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version: 2
+updates:
+  # requirements.txt(리포 맨 위 폴더)의 pip 패키지
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "holidays"
+
+  # 워크플로가 쓰는 GitHub 공식 액션(checkout·setup-python·deploy-pages 등)도 최신으로 유지
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
