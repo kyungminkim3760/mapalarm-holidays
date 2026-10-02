@@ -180,4 +180,4 @@ jobs:
     steps:
       # 위에서 올린 묶음을 실제 공개 주소에 배포
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
